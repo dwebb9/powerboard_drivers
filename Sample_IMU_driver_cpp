@@ -1,0 +1,535 @@
+#include "microstrain_imu_driver/microstrain_imu_driver.hpp"
+
+MicroStrainIMUDriver::MicroStrainIMUDriver(std::string port, int baud_rate,
+                                           std::string lcm_url)
+    : node(mscl::Connection::Serial(port, baud_rate)), lcm(lcm_url) {
+  if (!node.ping()) {
+    std::cout << "Couldn't connect to IMU" << std::endl;
+    throw 5;
+  }
+
+  // Reset everything from last time
+  node.setToIdle();
+  node.loadFactoryDefaultSettings();
+  // Here we initialize the EKF
+  // We set the heading to use the magnetometer to help
+  // And we auto-initialize the starting values
+  mscl::HeadingUpdateOptions options(
+      mscl::InertialTypes::ENABLE_INTERNAL_MAGNETOMETER);
+  node.setHeadingUpdateControl(options);
+  node.setAutoInitialization(true);
+}
+
+void MicroStrainIMUDriver::enable(MicroStrainIMUDriver::DATACLASS datatype,
+                                  int hertz, std::string channel) {
+  // Set up things we'll need later
+  mscl::MipTypes::DataClass dataclass;
+  std::vector<mscl::MipTypes::ChannelField> ch_fields;
+
+  // Choose the channels we're enabling
+  switch (datatype) {
+  case MicroStrainIMUDriver::IMU:
+    dataclass = mscl::MipTypes::CLASS_AHRS_IMU;
+    ch_fields = all_imu_chs;
+    imu_ch_name = channel;
+    break;
+  case MicroStrainIMUDriver::GNSS:
+    dataclass = mscl::MipTypes::CLASS_GNSS;
+    ch_fields = all_gnss_chs;
+    gnss_ch_name = channel;
+    break;
+  case MicroStrainIMUDriver::EST:
+    dataclass = mscl::MipTypes::CLASS_ESTFILTER;
+    ch_fields = all_est_chs;
+    est_ch_name = channel;
+    break;
+  }
+
+  // Enable channels
+  mscl::MipChannels chs;
+  for (auto ch : ch_fields) {
+    chs.push_back(mscl::MipChannel(ch, mscl::SampleRate::Hertz(hertz)));
+  }
+  node.setActiveChannelFields(dataclass, chs);
+  node.enableDataStream(dataclass);
+}
+
+void MicroStrainIMUDriver::run() {
+  while (true) {
+
+    // Get packets and iterate through them
+    mscl::MipDataPackets packets = node.getDataPackets(500);
+    for (mscl::MipDataPacket packet : packets) {
+
+      mscl::MipDataPoints points = packet.data();
+
+      // If it's IMU packet, make, fill and send it
+      if (packet.descriptorSet() == mscl::DescriptorSet::DESC_SET_DATA_SENSOR) {
+        lcm_messages::microstrain_imu msg;
+        for (mscl::MipDataPoint dataPoint : points) {
+          // This is ridiculous, but I don't see any better way...
+          std::string name = dataPoint.channelName();
+
+          // Parse through all the possible types of datapoints
+          // CH_FIELD_SENSOR_SCALED_ACCEL_VEC
+          if (name == "scaledAccelX")
+            msg.scaledAccelX = dataPoint.as_float();
+          else if (name == "scaledAccelY")
+            msg.scaledAccelY = dataPoint.as_float();
+          else if (name == "scaledAccelZ")
+            msg.scaledAccelZ = dataPoint.as_float();
+          // CH_FIELD_SENSOR_SCALED_GYRO_VEC
+          else if (name == "scaledGyroX")
+            msg.scaledGyroX = dataPoint.as_float();
+          else if (name == "scaledGyroY")
+            msg.scaledGyroY = dataPoint.as_float();
+          else if (name == "scaledGyroZ")
+            msg.scaledGyroZ = dataPoint.as_float();
+          // CH_FIELD_SENSOR_SCALED_MAG_VEC
+          else if (name == "scaledMagX")
+            msg.scaledMagX = dataPoint.as_float();
+          else if (name == "scaledMagY")
+            msg.scaledMagY = dataPoint.as_float();
+          else if (name == "scaledMagZ")
+            msg.scaledMagZ = dataPoint.as_float();
+          // CH_FIELD_SENSOR_DELTA_THETA_VEC
+          else if (name == "deltaThetaX")
+            msg.deltaThetaX = dataPoint.as_float();
+          else if (name == "deltaThetaY")
+            msg.deltaThetaY = dataPoint.as_float();
+          else if (name == "deltaThetaZ")
+            msg.deltaThetaZ = dataPoint.as_float();
+          // CH_FIELD_SENSOR_DELTA_VELOCITY_VEC
+          else if (name == "deltaVelX")
+            msg.deltaVelX = dataPoint.as_float();
+          else if (name == "deltaVelY")
+            msg.deltaVelY = dataPoint.as_float();
+          else if (name == "deltaVelZ")
+            msg.deltaVelZ = dataPoint.as_float();
+          // CH_FIELD_SENSOR_ORIENTATION_MATRIX
+          else if (name == "orientMatrix") {
+            auto dataVector = dataPoint.as_Matrix();
+            for (int i = 0; i < 3; i++) {
+              for (int j = 0; j < 3; j++) {
+                msg.orientMatrix[i][j] = dataVector.as_floatAt(i, j);
+              }
+            }
+          }
+          // CH_FIELD_SENSOR_EULER_ANGLES
+          else if (name == "roll")
+            msg.roll = dataPoint.as_float();
+          else if (name == "pitch")
+            msg.pitch = dataPoint.as_float();
+          else if (name == "yaw")
+            msg.yaw = dataPoint.as_float();
+          // CH_FIELD_SENSOR_ORIENTATION_QUATERNION
+          else if (name == "orientQuaternion") {
+            auto dataVector = dataPoint.as_Vector();
+            for (int i = 0; i < 3; i++) {
+              msg.orientQuaternion[i] = dataVector.as_floatAt(i);
+            }
+          }
+          // CH_FIELD_SENSOR_STABILIZED_MAG_VEC
+          else if (name == "stabilizedMagX")
+            msg.stabilizedMagX = dataPoint.as_float();
+          else if (name == "stabilizedMagY")
+            msg.stabilizedMagY = dataPoint.as_float();
+          else if (name == "stabilizedMagZ")
+            msg.stabilizedMagZ = dataPoint.as_float();
+          // CH_FIELD_SENSOR_STABILIZED_ACCEL_VEC
+          else if (name == "stabilizedAccelX")
+            msg.stabilizedAccelX = dataPoint.as_float();
+          else if (name == "stabilizedAccelY")
+            msg.stabilizedAccelY = dataPoint.as_float();
+          else if (name == "stabilizedAccelZ")
+            msg.stabilizedAccelZ = dataPoint.as_float();
+          // CH_FIELD_SENSOR_GPS_CORRELATION_TIMESTAMP
+          else if (name == "gpsCorrelTimestampTow")
+            msg.gpsCorrelTimestampTow = dataPoint.as_double();
+          else if (name == "gpsCorrelTimestampWeekNum")
+            msg.gpsCorrelTimestampWeekNum = dataPoint.as_int32();
+          else if (name == "gpsCorrelTimestampFlags")
+            msg.gpsCorrelTimestampFlags = dataPoint.as_int32();
+          // CH_FIELD_SENSOR_SCALED_AMBIENT_PRESSURE
+          else if (name == "scaledAmbientPressure")
+            msg.scaledAmbientPressure = dataPoint.as_float();
+          else
+            std::cout << name << std::endl;
+        }
+        // put timestamp in
+        auto now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now());
+        msg.timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            now_ns.time_since_epoch())
+                            .count();
+        lcm.publish(imu_ch_name, &msg);
+      }
+
+      // If it's GNSS packet, make, fill and send it
+      if (packet.descriptorSet() == mscl::DescriptorSet::DESC_SET_DATA_GNSS) {
+        lcm_messages::microstrain_gnss msg;
+        for (mscl::MipDataPoint dataPoint : points) {
+          // This is ridiculous, but I don't see any better way...
+          std::string name = dataPoint.channelName();
+
+          // Parse through all the possible types of datapoints
+          // GNSS DATA
+          // CH_FIELD_GNSS_LLH_POSITION
+          if (name == "latitude")
+            msg.latitude = dataPoint.as_double();
+          else if (name == "longitude")
+            msg.longitude = dataPoint.as_double();
+          else if (name == "heightAboveElipsoid")
+            msg.heightAboveElipsoid = dataPoint.as_double();
+          else if (name == "heightAboveMSL")
+            msg.heightAboveMSL = dataPoint.as_double();
+          else if (name == "horizontalAccuracy")
+            msg.horizontalAccuracy = dataPoint.as_float();
+          else if (name == "verticalAccuracy")
+            msg.verticalAccuracy = dataPoint.as_float();
+          // CH_FIELD_GNSS_ECEF_POSITION
+          else if (name == "ecefPosX")
+            msg.ecefPosX = dataPoint.as_double();
+          else if (name == "ecefPosY")
+            msg.ecefPosY = dataPoint.as_double();
+          else if (name == "ecefPosZ")
+            msg.ecefPosZ = dataPoint.as_double();
+          else if (name == "ecefPosAccuracy")
+            msg.ecefPosAccuracy = dataPoint.as_float();
+          // CH_FIELD_GNSS_NED_VELOCITY
+          else if (name == "northVelocity")
+            msg.northVelocity = dataPoint.as_float();
+          else if (name == "eastVelocity")
+            msg.eastVelocity = dataPoint.as_float();
+          else if (name == "downVelocity")
+            msg.downVelocity = dataPoint.as_float();
+          else if (name == "speed")
+            msg.speed = dataPoint.as_float();
+          else if (name == "groundSpeed")
+            msg.groundSpeed = dataPoint.as_float();
+          else if (name == "heading")
+            msg.heading = dataPoint.as_float();
+          else if (name == "speedAccuracy")
+            msg.speedAccuracy = dataPoint.as_float();
+          else if (name == "headingAccuracy")
+            msg.headingAccuracy = dataPoint.as_float();
+          // CH_FIELD_GNSS_ECEF_VELOCITY
+          else if (name == "ecefVelX")
+            msg.ecefVelX = dataPoint.as_float();
+          else if (name == "ecefVelY")
+            msg.ecefVelY = dataPoint.as_float();
+          else if (name == "ecefVelZ")
+            msg.ecefVelZ = dataPoint.as_float();
+          else if (name == "ecefVelAccuracy")
+            msg.ecefVelAccuracy = dataPoint.as_float();
+          // CH_FIELD_GNSS_DOP
+          else if (name == "geometricDOP")
+            msg.geometricDOP = dataPoint.as_float();
+          else if (name == "positionDOP")
+            msg.positionDOP = dataPoint.as_float();
+          else if (name == "horizontalDOP")
+            msg.horizontalDOP = dataPoint.as_float();
+          else if (name == "verticalDOP")
+            msg.verticalDOP = dataPoint.as_float();
+          else if (name == "timeDOP")
+            msg.timeDOP = dataPoint.as_float();
+          else if (name == "northingDOP")
+            msg.northingDOP = dataPoint.as_float();
+          else if (name == "eastingDOP")
+            msg.eastingDOP = dataPoint.as_float();
+          // CH_FIELD_GNSS_UTC_TIME
+          else if (name == "utcTimestamp")
+            msg.utcTimestamp =
+                dataPoint.as_Timestamp()
+                    .nanoseconds(); // This returns uint64 and we put it into a
+                                    // int64.. be warned.
+          else if (name == "utcTimestampFlags")
+            msg.utcTimestampFlags = dataPoint.as_int32();
+          // CH_FIELD_GNSS_GPS_TIME
+          else if (name == "gpsTimeTow")
+            msg.gpsTimeTow = dataPoint.as_double();
+          else if (name == "gpsTimeWeekNum")
+            msg.gpsTimeWeekNum = dataPoint.as_uint16();
+          // CH_FIELD_GNSS_CLOCK_INFO
+          else if (name == "gpsClockBias")
+            msg.gpsClockBias = dataPoint.as_double();
+          else if (name == "gpsClockDrift")
+            msg.gpsClockDrift = dataPoint.as_double();
+          else if (name == "gpsClockAccuracy")
+            msg.gpsClockAccuracy = dataPoint.as_double();
+          // CH_FIELD_GNSS_FIX_INFO
+          else if (name == "gnssFixType")
+            msg.gnssFixType = dataPoint.as_uint8();
+          else if (name == "gnssFixSvCount")
+            msg.gnssFixSvCount = dataPoint.as_uint8();
+          else if (name == "gnssFixFlags")
+            msg.gnssFixFlags = dataPoint.as_uint16();
+          // CH_FIELD_GNSS_SPACE_VEHICLE_INFO
+          // This one changes depending on how many satellites we're hooked to,
+          // we can figure something out later CH_FIELD_GNSS_HARDWARE_STATUS
+          else if (name == "sensorState")
+            msg.sensorState = dataPoint.as_uint8();
+          else if (name == "antennaState")
+            msg.antennaState = dataPoint.as_uint8();
+          else if (name == "antennaPower")
+            msg.antennaPower = dataPoint.as_uint8();
+          // CH_FIELD_GNSS_DGNSS_INFO
+          else if (name == "dgnss_newestAge_gnssBase_0")
+            msg.dgnss_newestAge_gnssBase_0 = dataPoint.as_float();
+          else if (name == "dgnss_baseStationStatus_gnssBase_0")
+            msg.dgnss_baseStationStatus_gnssBase_0 =
+                dataPoint.as_int16(); // This one was the only signed one, the
+                                      // others are technically unsigned, so I
+                                      // upped their bits by one
+          else if (name == "dgnss_numChannels_gnssBase_0")
+            msg.dgnss_numChannels_gnssBase_0 = dataPoint.as_uint16();
+          // CH_FIELD_GNSS_DGNSS_CHANNEL_STATUS
+          // I've never gotten this to return anything
+          else if (name.substr(0, 3) != "svi")
+            std::cout << name << std::endl;
+        }
+        // put timestamp in
+        auto now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now());
+        msg.timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            now_ns.time_since_epoch())
+                            .count();
+        lcm.publish(gnss_ch_name, &msg);
+      }
+
+      // If it's EST packet, make, fill and send it
+      if (packet.descriptorSet() ==
+          mscl::DescriptorSet::DESC_SET_DATA_EST_FILTER) {
+        lcm_messages::microstrain_est msg;
+        for (mscl::MipDataPoint dataPoint : points) {
+          // This is ridiculous, but I don't see any better way...
+          std::string name = dataPoint.channelName();
+
+          // Parse through all the possible types of datapoints
+          // EST Data
+          // CH_FIELD_ESTFILTER_ESTIMATED_LLH_POS
+          if (name == "estLatitude")
+            msg.estLatitude = dataPoint.as_double();
+          else if (name == "estLongitude")
+            msg.estLongitude = dataPoint.as_double();
+          else if (name == "estHeightAboveElipsoid")
+            msg.estHeightAboveElipsoid = dataPoint.as_double();
+          // CH_FIELD_ESTFILTER_ESTIMATED_NED_VELOCITY
+          else if (name == "estNorthVelocity")
+            msg.estNorthVelocity = dataPoint.as_float();
+          else if (name == "estEastVelocity")
+            msg.estEastVelocity = dataPoint.as_float();
+          else if (name == "estDownVelocity")
+            msg.estDownVelocity = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ESTIMATED_ORIENT_QUATERNION
+          else if (name == "estOrientQuaternion") {
+            auto dataVector = dataPoint.as_Vector();
+            for (int i = 0; i < 3; i++) {
+              msg.estOrientQuaternion[i] = dataVector.as_floatAt(i);
+            }
+          }
+          // CH_FIELD_ESTFILTER_ESTIMATED_ORIENT_MATRIX
+          else if (name == "estOrientMatrix") {
+            auto dataVector = dataPoint.as_Matrix();
+            for (int i = 0; i < 3; i++) {
+              for (int j = 0; j < 3; j++) {
+                msg.estOrientMatrix[i][j] = dataVector.as_floatAt(i, j);
+              }
+            }
+          }
+          // CH_FIELD_ESTFILTER_ESTIMATED_ORIENT_EULER
+          else if (name == "estRoll")
+            msg.estRoll = dataPoint.as_float();
+          else if (name == "estPitch")
+            msg.estPitch = dataPoint.as_float();
+          else if (name == "estYaw")
+            msg.estYaw = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ESTIMATED_GYRO_BIAS
+          else if (name == "estGyroBiasX")
+            msg.estGyroBiasX = dataPoint.as_float();
+          else if (name == "estGyroBiasY")
+            msg.estGyroBiasY = dataPoint.as_float();
+          else if (name == "estGyroBiasZ")
+            msg.estGyroBiasZ = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ESTIMATED_ACCEL_BIAS
+          else if (name == "estAccelBiasX")
+            msg.estAccelBiasX = dataPoint.as_float();
+          else if (name == "estAccelBiasY")
+            msg.estAccelBiasY = dataPoint.as_float();
+          else if (name == "estAccelBiasZ")
+            msg.estAccelBiasZ = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ESTIMATED_LLH_UNCERT
+          else if (name == "estNorthPositionUncert")
+            msg.estNorthPositionUncert = dataPoint.as_float();
+          else if (name == "estEastPositionUncert")
+            msg.estEastPositionUncert = dataPoint.as_float();
+          else if (name == "estDownPositionUncert")
+            msg.estDownPositionUncert = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ESTIMATED_NED_UNCERT
+          else if (name == "estNorthVelocityUncert")
+            msg.estNorthVelocityUncert = dataPoint.as_float();
+          else if (name == "estEastVelocityUncert")
+            msg.estEastVelocityUncert = dataPoint.as_float();
+          else if (name == "estDownVelocityUncert")
+            msg.estDownVelocityUncert = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ESTIMATED_ATT_UNCERT_EULER
+          else if (name == "estRollUncert")
+            msg.estRollUncert = dataPoint.as_float();
+          else if (name == "estPitchUncert")
+            msg.estPitchUncert = dataPoint.as_float();
+          else if (name == "estYawUncert")
+            msg.estYawUncert = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ESTIMATED_GYRO_BIAS_UNCERT
+          else if (name == "estGyroBiasXUncert")
+            msg.estGyroBiasXUncert = dataPoint.as_float();
+          else if (name == "estGyroBiasYUncert")
+            msg.estGyroBiasYUncert = dataPoint.as_float();
+          else if (name == "estGyroBiasZUncert")
+            msg.estGyroBiasZUncert = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ESTIMATED_ACCEL_BIAS_UNCERT
+          else if (name == "estAccelBiasXUncert")
+            msg.estAccelBiasXUncert = dataPoint.as_float();
+          else if (name == "estAccelBiasYUncert")
+            msg.estAccelBiasYUncert = dataPoint.as_float();
+          else if (name == "estAccelBiasZUncert")
+            msg.estAccelBiasZUncert = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ESTIMATED_LINEAR_ACCEL
+          else if (name == "estLinearAccelX")
+            msg.estLinearAccelX = dataPoint.as_float();
+          else if (name == "estLinearAccelY")
+            msg.estLinearAccelY = dataPoint.as_float();
+          else if (name == "estLinearAccelZ")
+            msg.estLinearAccelZ = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ESTIMATED_ANGULAR_RATE
+          else if (name == "estAngularRateX")
+            msg.estAngularRateX = dataPoint.as_float();
+          else if (name == "estAngularRateY")
+            msg.estAngularRateY = dataPoint.as_float();
+          else if (name == "estAngularRateZ")
+            msg.estAngularRateZ = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_WGS84_LOC_GRAV_MAGNITUDE
+          else if (name == "estWGS84LocalGravMagnitude")
+            msg.estWGS84LocalGravMagnitude = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_FILTER_STATUS
+          else if (name == "estFilterState")
+            msg.estFilterState = dataPoint.as_int32();
+          else if (name == "estFilterDynamicsMode")
+            msg.estFilterDynamicsMode = dataPoint.as_int32();
+          else if (name == "estFilterStatusFlags")
+            msg.estFilterStatusFlags = dataPoint.as_int32();
+          // CH_FIELD_ESTFILTER_GPS_TIMESTAMP
+          else if (name == "estFilterGpsTimeTow")
+            msg.estFilterGpsTimeTow = dataPoint.as_double();
+          else if (name == "estFilterGpsTimeWeekNum")
+            msg.estFilterGpsTimeWeekNum = dataPoint.as_int32();
+          // CH_FIELD_ESTFILTER_ESTIMATED_ATT_UNCERT_QUAT
+          else if (name == "estAttitudeUncertQuaternion") {
+            auto dataVector = dataPoint.as_Vector();
+            for (int i = 0; i < 3; i++) {
+              msg.estAttitudeUncertQuaternion[i] = dataVector.as_floatAt(i);
+            }
+          }
+          // CH_FIELD_ESTFILTER_ESTIMATED_GRAVITY_VECTOR
+          else if (name == "estGravityVectorX")
+            msg.estGravityVectorX = dataPoint.as_float();
+          else if (name == "estGravityVectorY")
+            msg.estGravityVectorY = dataPoint.as_float();
+          else if (name == "estGravityVectorZ")
+            msg.estGravityVectorZ = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_HEADING_UPDATE_SOURCE
+          else if (name == "estHeading")
+            msg.estHeading = dataPoint.as_float();
+          else if (name == "estHeadingUncert")
+            msg.estHeadingUncert = dataPoint.as_float();
+          else if (name == "estHeadingSource")
+            msg.estHeadingSource = dataPoint.as_int32();
+          // CH_FIELD_ESTFILTER_MAGNETIC_MODEL_SLN
+          else if (name == "estMagneticModelSlnNorth")
+            msg.estMagneticModelSlnNorth = dataPoint.as_float();
+          else if (name == "estMagneticModelSlnEast")
+            msg.estMagneticModelSlnEast = dataPoint.as_float();
+          else if (name == "estMagneticModelSlnDown")
+            msg.estMagneticModelSlnDown = dataPoint.as_float();
+          else if (name == "estMagneticModelSlnInclination")
+            msg.estMagneticModelSlnInclination = dataPoint.as_float();
+          else if (name == "estMagneticModelSlnDeclination")
+            msg.estMagneticModelSlnDeclination = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ESTIMATED_GYRO_SCALE_FACTOR
+          else if (name == "estGyroScaleFactorX")
+            msg.estGyroScaleFactorX = dataPoint.as_float();
+          else if (name == "estGyroScaleFactorY")
+            msg.estGyroScaleFactorY = dataPoint.as_float();
+          else if (name == "estGyroScaleFactorZ")
+            msg.estGyroScaleFactorZ = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ACCEL_SCALE_FACTOR
+          else if (name == "estAccelScaleFactorX")
+            msg.estAccelScaleFactorX = dataPoint.as_float();
+          else if (name == "estAccelScaleFactorY")
+            msg.estAccelScaleFactorY = dataPoint.as_float();
+          else if (name == "estAccelScaleFactorZ")
+            msg.estAccelScaleFactorZ = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_GYRO_SCALE_FACTOR_UNCERT
+          else if (name == "estGyroScaleFactorXUncert")
+            msg.estGyroScaleFactorXUncert = dataPoint.as_float();
+          else if (name == "estGyroScaleFactorYUncert")
+            msg.estGyroScaleFactorYUncert = dataPoint.as_float();
+          else if (name == "estGyroScaleFactorZUncert")
+            msg.estGyroScaleFactorZUncert = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_ACCEL_SCALE_FACTOR_UNCERT
+          else if (name == "estAccelScaleFactorXUncert")
+            msg.estAccelScaleFactorXUncert = dataPoint.as_float();
+          else if (name == "estAccelScaleFactorYUncert")
+            msg.estAccelScaleFactorYUncert = dataPoint.as_float();
+          else if (name == "estAccelScaleFactorZUncert")
+            msg.estAccelScaleFactorZUncert = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_COMPENSATED_ACCEL
+          else if (name == "estCompensatedAccelX")
+            msg.estCompensatedAccelX = dataPoint.as_float();
+          else if (name == "estCompensatedAccelY")
+            msg.estCompensatedAccelY = dataPoint.as_float();
+          else if (name == "estCompensatedAccelZ")
+            msg.estCompensatedAccelZ = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_STD_ATMOSPHERE_MODEL
+          else if (name == "estStdAtmModelGeometricAlt")
+            msg.estStdAtmModelGeometricAlt = dataPoint.as_float();
+          else if (name == "estStdAtmModelGeopotentialAlt")
+            msg.estStdAtmModelGeopotentialAlt = dataPoint.as_float();
+          else if (name == "estStdAtmModelTemperature")
+            msg.estStdAtmModelTemperature = dataPoint.as_float();
+          else if (name == "estStdAtmModelPressure")
+            msg.estStdAtmModelPressure = dataPoint.as_float();
+          else if (name == "estStdAtmModelDensity")
+            msg.estStdAtmModelDensity = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_PRESSURE_ALTITUDE
+          else if (name == "estPressureAlt")
+            msg.estPressureAlt = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_MAG_AUTO_HARD_IRON_OFFSET
+          else if (name == "estMagAutoHardIronOffsetX")
+            msg.estMagAutoHardIronOffsetX = dataPoint.as_float();
+          else if (name == "estMagAutoHardIronOffsetY")
+            msg.estMagAutoHardIronOffsetY = dataPoint.as_float();
+          else if (name == "estMagAutoHardIronOffsetZ")
+            msg.estMagAutoHardIronOffsetZ = dataPoint.as_float();
+          // CH_FIELD_ESTFILTER_MAG_AUTO_SOFT_IRON_MATRIX
+          else if (name == "estMagAutoSoftIronMatrix") {
+            auto dataVector = dataPoint.as_Matrix();
+            for (int i = 0; i < 3; i++) {
+              for (int j = 0; j < 3; j++) {
+                msg.estMagAutoSoftIronMatrix[i][j] =
+                    dataVector.as_floatAt(i, j);
+              }
+            }
+          } else
+            std::cout << name << std::endl;
+        }
+        // put timestamp in
+        auto now_ns = std::chrono::time_point_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now());
+        msg.timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            now_ns.time_since_epoch())
+                            .count();
+        lcm.publish(est_ch_name, &msg);
+      }
+    }
+  }
+}

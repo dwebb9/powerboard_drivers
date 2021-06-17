@@ -1,6 +1,8 @@
 import RPi.GPIO as GPIO
 import time
 from smbus import SMBus
+import lcm
+import power_board
 
 bus = SMBus(1)
 ARDUINO_address = 0x8 # address of arduino nano
@@ -15,10 +17,13 @@ config = [int(config_dec/256), config_dec%256]
 bus.write_i2c_block_data(ADC1_address,1,config)
 bus.write_i2c_block_data(ADC2_address,1,config)
 
+#set up LCM
+lc = lcm.LCM()
+
 # initialize message to Arduino
 numb = 1
 
-print("Enter 1Arduino Input: ")
+print("Enter Arduino Input: ")
 
 while numb == 1:
 
@@ -42,7 +47,7 @@ while numb == 1:
     elif ledstate == "7":
         bus.write_byte(ARDUINO_address, 0x7) # DCDC12 pin off
     else:
-        numb = numb
+        numb = numb                          # do nothing
 
     # Battery ADC monitoring 
     ADC1_v = bus.read_i2c_block_data(ADC1_address,0)
@@ -58,6 +63,9 @@ while numb == 1:
     ADC2_c = bus.read_i2c_block_data(ADC2_address,1)
     current2 = (ADC2_c[0]*256 + ADC2_c[1])
     time.sleep(2)
+
+    
+
     print ("ADC1 Voltage: ", voltage1*0.0014)
     print ("ADC2 Voltage: ", voltage2*0.0014)
     print ("ADC1 Current: ", current1)
